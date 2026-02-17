@@ -1,0 +1,38 @@
+{
+  "name": "api-template",
+  "version": "1.0.50",
+  "scripts": {
+    "build": "bun build --compile --minify-whitespace --minify-syntax --target bun --outfile server src/infra/http/server.ts",
+    "dev": "bun --watch src/infra/http/server.ts",
+    "migrate": "bun --bun drizzle-kit migrate",
+    "generate": "bun --bun drizzle-kit generate",
+    "start": ".server.ts",
+    "biome:format": "biome format --write src/",
+    "biome:fix": "biome lint src/",
+    "biome:check": "biome check --write src/"
+  },
+  "dependencies": {
+    "@elysiajs/openapi": "^1.4.13",
+    "@elysiajs/opentelemetry": "^1.4.9",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.208.0",
+    "@opentelemetry/instrumentation-pg": "^0.61.2",
+    "@opentelemetry/sdk-trace-node": "^2.2.0",
+    "@paralleldrive/cuid2": "^3.0.4",
+    "@sentry/bun": "^10.33.0",
+    "@tqman/nice-logger": "^1.1.1",
+    "axios": "^1.13.2",
+    "drizzle-orm": "^0.45.1",
+    "elysia": "latest",
+    "pg": "^8.16.3",
+    "qrcode": "^1.5.4",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.10",
+    "@types/pg": "^8.16.0",
+    "@types/qrcode": "^1.5.6",
+    "bun-types": "latest",
+    "drizzle-kit": "^0.31.8"
+  },
+  "module": "src/index.js"
+}
