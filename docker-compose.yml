@@ -1,5 +1,3 @@
-
-
 services:
   server:
     build:
@@ -8,20 +6,13 @@ services:
       - 3333:3000
     volumes:
       - .:/app
-    environment:
-        - DATABASE_URL=postgresql://postgres:docker@database:5432/guaruba-payments-db
-        - API_URL=${API_URL}
-        - HASH_SECRET=${HASH_SECRET}
-        - BACKEND_SECRET_KEY=${BACKEND_SECRET_KEY}
-        - BACKEND_PUBLIC_KEY=${BACKEND_PUBLIC_KEY}
-        - SENTRY_DSN=${SENTRY_DSN}
     env_file:
       - ./.env
     depends_on:
       database:
         condition: service_healthy
     networks:
-      - guaruba-payments-net
+      - api-network
     command: bun run dev
 
   database:
@@ -32,19 +23,19 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: docker
-      POSTGRES_DB: guaruba-payments-db
+      POSTGRES_DB: api-db
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
     volumes:
-      - guaruba-payments_ms_pg_data:/bitnami/postgresql
+      - api_ms_pg_data:/bitnami/postgresql
     networks:
-        - guaruba-payments-net
+        - api-network
 
 volumes:
-  guaruba-payments_ms_pg_data:
+  api_ms_pg_data:
 
 networks:
-  guaruba-payments-net:
+  api-network:
