@@ -1,7 +1,7 @@
 import { swagger } from '@elysiajs/swagger'
 import * as Sentry from '@sentry/bun'
 import { Elysia } from 'elysia'
-import { AppError } from '@/domain/errors/AppError'
+import { AppError } from '@/shared/utils/errors/AppError'
 import { env } from './config/env'
 import { routes } from './config/routes'
 
