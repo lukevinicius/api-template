@@ -5,6 +5,7 @@
     "build": "bun build --compile --minify-syntax --target bun --outfile server src/server.ts",
     "dev": "bun --watch src/server.ts",
     "migrate": "bun --bun drizzle-kit migrate",
+    "migrate:prod": "bun src/database/migrate.ts",
     "generate": "bun --bun drizzle-kit generate",
     "start": "bun src/server.ts",
     "test": "bun test",
