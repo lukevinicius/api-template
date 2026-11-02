@@ -4,9 +4,9 @@ type ErrorResponse = {
     statusCode: number
     message: string
     details?: {
-      error: string,
+      error: string
       data: unknown
-    };
+    }
   }
 }
 type Success<T> = { success: true; data: T }

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "orders_client_open_unique" ON "orders" USING btree ("client_id") WHERE "orders"."status" = 'OPEN' and "orders"."deleted_at" is null;

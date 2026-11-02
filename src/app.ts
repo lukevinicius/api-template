@@ -14,11 +14,15 @@ Sentry.init({
 })
 
 export const app = new Elysia()
-  .use(swagger())
-  .onRequest(({ request }) => {
+  .use(swagger({ exclude: ['/'] }))
+  .onRequest(({ request, set }) => {
     console.log(`${request.method} ${request.url}`)
+
+    set.headers['x-content-type-options'] = 'nosniff'
+    set.headers['x-frame-options'] = 'DENY'
+    set.headers['referrer-policy'] = 'no-referrer'
   })
-  .error('AppError', AppError)
+  .error({ AppError })
   .onError(({ code, error, set }) => {
     switch (code) {
       case 'AppError':
@@ -31,19 +35,28 @@ export const app = new Elysia()
         set.status = 400
         return {
           status: 'error',
-          message: 'Invalid data',
-          error,
+          message: 'Dados inválidos',
+          errors: error.all.map((issue) => ({
+            field: 'path' in issue ? issue.path : undefined,
+            message: issue.summary ?? issue.message,
+          })),
         }
+      case 'PARSE':
+        set.status = 400
+        return { status: 'error', message: 'Corpo da requisição inválido' }
+      case 'NOT_FOUND':
+        set.status = 404
+        return { status: 'error', message: 'Rota não encontrada' }
       default:
         set.status = 500
         console.error(error)
+        Sentry.captureException(error)
         return {
           status: 'error',
-          message: 'Internal server error',
+          message: 'Erro interno do servidor',
         }
     }
   })
-
-app.use(routes)
+  .use(routes)
 
 export type ElysiaApp = typeof app

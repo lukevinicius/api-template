@@ -44,3 +44,5 @@ yarn-error.log*
 package-lock.json
 bun.lockb
 **/*.bun
+# uploaded files
+/uploads

@@ -29,7 +29,7 @@ export function errorBuilder(title: string, error: unknown): ErrorResponse {
           error: errorMessage,
           data: error.response?.data,
         },
-      }
+      },
     }
 
     // sentry.logger.warn(response.message, { details: response.details })

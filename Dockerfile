@@ -14,4 +14,4 @@ RUN bun run build
 
 CMD ["./server"]
 
-EXPOSE 3000
+EXPOSE 3333
