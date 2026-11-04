@@ -28,7 +28,8 @@ export interface Client {
 
 export interface ClientWithSummary extends Client {
   openOrders: number
-  openAmount: number // in cents, chips owed in open orders
+  openAmount: number // in cents, owed in open orders and awaiting settlement
+  pendingPayout: number // in cents, repasse the house still owes the client
   availableLimit: number // in cents, chipLimit - openAmount
 }
 
@@ -37,6 +38,8 @@ export interface ClientReport {
   totalPaid: number // in cents, includes advances and chips returned
   totalOpen: number // in cents
   totalPayout: number // in cents, paid back to the client
+  totalPendingPayout: number // in cents, still to be paid back
   ordersCount: number
   openOrdersCount: number
+  awaitingSettlementCount: number
 }

@@ -20,6 +20,7 @@ const {
   orderItems,
   orderPayments,
   orderChipReturns,
+  orderPayouts,
   clients,
   chips,
   users,
@@ -46,15 +47,28 @@ const summaryColumns = {
   feeRate: orders.feeRate,
   feeAmount: orders.feeAmount,
   payoutAmount: orders.payoutAmount,
+  paidOutAmount: orders.paidOutAmount,
   payoutMethod: orders.payoutMethod,
   chipsCount: sql<number>`coalesce(${chipsCount.value}, 0)`.mapWith(Number),
   notes: orders.notes,
   createdAt: orders.createdAt,
   closedAt: orders.closedAt,
+  settledAt: orders.settledAt,
 }
 
-function toSummary<T extends { total: number; paidAmount: number }>(row: T) {
-  return { ...row, openAmount: row.total - row.paidAmount }
+function toSummary<
+  T extends {
+    total: number
+    paidAmount: number
+    payoutAmount: number
+    paidOutAmount: number
+  },
+>(row: T) {
+  return {
+    ...row,
+    openAmount: row.total - row.paidAmount,
+    pendingPayout: row.payoutAmount - row.paidOutAmount,
+  }
 }
 
 export const ordersModel = {
@@ -77,8 +91,11 @@ export const ordersModel = {
         .innerJoin(clients, eq(clients.id, orders.clientId))
         .leftJoin(chipsCount, eq(chipsCount.orderId, orders.id))
         .where(where)
-        // Open orders first, newest first
-        .orderBy(sql`${orders.status} = 'OPEN' desc`, desc(orders.createdAt))
+        // Open orders first, then the ones awaiting settlement, newest first
+        .orderBy(
+          sql`case ${orders.status} when 'OPEN' then 0 when 'AWAITING_SETTLEMENT' then 1 else 2 end`,
+          desc(orders.createdAt),
+        )
         .limit(pageSize)
         .offset((page - 1) * pageSize),
       db
@@ -130,7 +147,7 @@ export const ordersModel = {
       return null
     }
 
-    const [items, payments, returns] = await Promise.all([
+    const [items, payments, returns, payouts] = await Promise.all([
       executor
         .select({
           id: orderItems.id,
@@ -177,6 +194,19 @@ export const ordersModel = {
         .innerJoin(users, eq(users.id, orderChipReturns.receivedById))
         .where(eq(orderChipReturns.orderId, orderId))
         .orderBy(desc(orderChipReturns.unitPrice)),
+      executor
+        .select({
+          id: orderPayouts.id,
+          method: orderPayouts.method,
+          amount: orderPayouts.amount,
+          pixKey: orderPayouts.pixKey,
+          paidByName: users.name,
+          createdAt: orderPayouts.createdAt,
+        })
+        .from(orderPayouts)
+        .innerJoin(users, eq(users.id, orderPayouts.paidById))
+        .where(eq(orderPayouts.orderId, orderId))
+        .orderBy(asc(orderPayouts.createdAt)),
     ])
 
     const { openedById, openedByName, closedById, closedByName, ...summary } =
@@ -192,6 +222,7 @@ export const ordersModel = {
       items,
       payments,
       returns,
+      payouts,
     }
   },
   lock: async (tx: Executor, orderId: string) => {
@@ -218,10 +249,6 @@ export const ordersModel = {
 
     return order ?? null
   },
-  /**
-   * Value of the chips sold and not returned yet, in cents. Exchanges always
-   * balance, so they do not change it.
-   */
   create: async (tx: Executor, payload: typeof orders.$inferInsert) => {
     const [order] = await tx.insert(orders).values(payload).returning()
 
@@ -279,6 +306,14 @@ export const ordersModel = {
     const [payment] = await tx.insert(orderPayments).values(payload).returning()
 
     return payment
+  },
+  insertPayout: async (
+    tx: Executor,
+    payload: typeof orderPayouts.$inferInsert,
+  ) => {
+    const [payout] = await tx.insert(orderPayouts).values(payload).returning()
+
+    return payout
   },
   insertReturns: async (
     tx: Executor,

@@ -5,6 +5,7 @@ import {
   desc,
   eq,
   gte,
+  inArray,
   isNull,
   lte,
   ne,
@@ -40,8 +41,9 @@ export const dashboardService = {
       ne(orders.status, 'CANCELED'),
       isNull(orders.deletedAt),
     )
+    // Chips returned in the period, settled or awaiting the settlement
     const closedInPeriod = and(
-      eq(orders.status, 'CLOSED'),
+      inArray(orders.status, ['CLOSED', 'AWAITING_SETTLEMENT']),
       isNull(orders.deletedAt),
       ...periodConditions(orders.closedAt, period),
     )
@@ -81,7 +83,11 @@ export const dashboardService = {
           sold: sumOf(orders.total),
           returned: sumOf(orders.returnedAmount),
           openDebt:
-            sql<number>`coalesce(sum(${orders.total} - ${orders.paidAmount}) filter (where ${orders.status} = 'OPEN'), 0)`.mapWith(
+            sql<number>`coalesce(sum(${orders.total} - ${orders.paidAmount}) filter (where ${orders.status} in ('OPEN', 'AWAITING_SETTLEMENT')), 0)`.mapWith(
+              Number,
+            ),
+          pendingPayouts:
+            sql<number>`coalesce(sum(${orders.payoutAmount} - ${orders.paidOutAmount}) filter (where ${orders.status} = 'AWAITING_SETTLEMENT'), 0)`.mapWith(
               Number,
             ),
         })
@@ -132,7 +138,12 @@ export const dashboardService = {
         })
         .from(orders)
         .innerJoin(clients, eq(clients.id, orders.clientId))
-        .where(and(eq(orders.status, 'OPEN'), isNull(orders.deletedAt)))
+        .where(
+          and(
+            inArray(orders.status, ['OPEN', 'AWAITING_SETTLEMENT']),
+            isNull(orders.deletedAt),
+          ),
+        )
         .groupBy(clients.id)
         .having(sql`sum(${orders.total} - ${orders.paidAmount}) > 0`)
         .orderBy(desc(sql`sum(${orders.total} - ${orders.paidAmount})`))
@@ -183,6 +194,7 @@ export const dashboardService = {
       },
       inCirculation: (circulation?.sold ?? 0) - (circulation?.returned ?? 0),
       openDebt: circulation?.openDebt ?? 0,
+      pendingPayouts: circulation?.pendingPayouts ?? 0,
       feeProfit: closed?.feeProfit ?? 0,
       payout: closed?.payout ?? 0,
       closedOrdersCount: closed?.ordersCount ?? 0,

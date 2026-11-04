@@ -1,5 +1,9 @@
 import { auditLogs } from '../modules/audits/audits.schema'
 import { refreshTokens } from '../modules/auth/auth.schema'
+import {
+  cashClosings,
+  cashMovements,
+} from '../modules/cash-closings/cash-closings.schema'
 import { chips } from '../modules/chips/chips.schema'
 import { clients } from '../modules/clients/clients.schema'
 import { exchangeItems, exchanges } from '../modules/exchanges/exchanges.schema'
@@ -7,6 +11,7 @@ import {
   orderChipReturns,
   orderItems,
   orderPayments,
+  orderPayouts,
   orders,
 } from '../modules/orders/orders.schema'
 import { settings } from '../modules/settings/settings.schema'
@@ -14,6 +19,7 @@ import { users } from '../modules/users/users.schema'
 
 export * from '../modules/audits/audits.schema'
 export * from '../modules/auth/auth.schema'
+export * from '../modules/cash-closings/cash-closings.schema'
 export * from '../modules/chips/chips.schema'
 export * from '../modules/clients/clients.schema'
 export * from '../modules/exchanges/exchanges.schema'
@@ -31,7 +37,10 @@ export const schema = {
   orderItems,
   orderPayments,
   orderChipReturns,
+  orderPayouts,
   exchanges,
   exchangeItems,
   auditLogs,
+  cashClosings,
+  cashMovements,
 }

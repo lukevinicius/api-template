@@ -102,6 +102,7 @@ export const clientsService = {
       ...client,
       openOrders: report.openOrdersCount,
       openAmount,
+      pendingPayout: report.totalPendingPayout,
       availableLimit: Math.max(client.chipLimit - openAmount, 0),
     }
   },

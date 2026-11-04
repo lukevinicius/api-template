@@ -14,10 +14,13 @@ import { chips } from '../chips/chips.schema'
 import { clients } from '../clients/clients.schema'
 import { users } from '../users/users.schema'
 
+// AWAITING_SETTLEMENT: chips already returned, but the money is settled later
+// (the client still owes the house, or the house still owes a payout)
 export const orderStatusEnum = pgEnum('order_status', [
   'OPEN',
   'CLOSED',
   'CANCELED',
+  'AWAITING_SETTLEMENT',
 ])
 
 // CHIPS: debt settled with the chips returned by the client
@@ -51,10 +54,12 @@ export const orders = pgTable(
     returnedAmount: integer('returned_amount').default(0).notNull(), // in cents, chips given back on closing
     feeRate: integer('fee_rate'), // basis points applied on closing
     feeAmount: integer('fee_amount').default(0).notNull(), // in cents, operation fee on the returned chips
-    payoutAmount: integer('payout_amount').default(0).notNull(), // in cents, total repassado
-    payoutMethod: payoutMethodEnum('payout_method'),
+    payoutAmount: integer('payout_amount').default(0).notNull(), // in cents, repasse due to the client
+    paidOutAmount: integer('paid_out_amount').default(0).notNull(), // in cents, repasse already paid
+    payoutMethod: payoutMethodEnum('payout_method'), // method of the last payout
     notes: text('notes'),
-    closedAt: timestamp('closed_at'),
+    closedAt: timestamp('closed_at'), // chips returned: no more chip movement
+    settledAt: timestamp('settled_at'), // nothing left to pay on either side
     ...timestamps,
   },
   (table) => [
@@ -141,4 +146,25 @@ export const orderChipReturns = pgTable(
     index('order_chip_returns_order_id_idx').on(table.orderId),
     index('order_chip_returns_chip_id_idx').on(table.chipId),
   ],
+)
+
+// Repasses pagos ao cliente (no fechamento ou depois, no acerto)
+export const orderPayouts = pgTable(
+  'order_payouts',
+  {
+    id: text('id')
+      .$defaultFn(() => createId())
+      .primaryKey(),
+    orderId: text('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    paidById: text('paid_by_id')
+      .notNull()
+      .references(() => users.id),
+    method: payoutMethodEnum('method').notNull(),
+    amount: integer('amount').notNull(), // in cents
+    pixKey: text('pix_key'), // snapshot of the client's key on PIX payouts
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [index('order_payouts_order_id_idx').on(table.orderId)],
 )

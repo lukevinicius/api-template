@@ -1,4 +1,4 @@
-import { and, asc, eq, ilike, isNull, ne, or, sql } from 'drizzle-orm'
+import { and, asc, eq, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import { db, type Executor } from '@/config/database'
 import { schema } from '@/database/schema'
 import { escapeLike } from '@/shared/utils/sql'
@@ -66,7 +66,10 @@ export const clientsModel = {
 
     return client ?? null
   },
-  /** Chips the client still owes in open orders, in cents. */
+  /**
+   * What the client still owes, in cents: open orders and orders whose chips
+   * were returned but are still awaiting the settlement.
+   */
   getOpenAmount: async (
     clientId: string,
     executor: Executor = db,
@@ -82,7 +85,7 @@ export const clientsModel = {
       .where(
         and(
           eq(orders.clientId, clientId),
-          eq(orders.status, 'OPEN'),
+          inArray(orders.status, ['OPEN', 'AWAITING_SETTLEMENT']),
           isNull(orders.deletedAt),
         ),
       )
@@ -91,6 +94,7 @@ export const clientsModel = {
   },
   fetch: async (search?: string): Promise<ClientWithSummary[]> => {
     const openOrder = sql`${orders.status} = 'OPEN'`
+    const owing = sql`${orders.status} in ('OPEN', 'AWAITING_SETTLEMENT')`
     const pattern = search ? `%${escapeLike(search)}%` : undefined
 
     const rows = await db
@@ -101,7 +105,11 @@ export const clientsModel = {
             Number,
           ),
         openAmount:
-          sql<number>`coalesce(sum(${orders.total} - ${orders.paidAmount}) filter (where ${openOrder}), 0)`.mapWith(
+          sql<number>`coalesce(sum(${orders.total} - ${orders.paidAmount}) filter (where ${owing}), 0)`.mapWith(
+            Number,
+          ),
+        pendingPayout:
+          sql<number>`coalesce(sum(${orders.payoutAmount} - ${orders.paidOutAmount}) filter (where ${orders.status} = 'AWAITING_SETTLEMENT'), 0)`.mapWith(
             Number,
           ),
       })
@@ -136,10 +144,20 @@ export const clientsModel = {
           Number,
         ),
         totalPayout:
-          sql<number>`coalesce(sum(${orders.payoutAmount}), 0)`.mapWith(Number),
+          sql<number>`coalesce(sum(${orders.paidOutAmount}), 0)`.mapWith(
+            Number,
+          ),
+        totalPendingPayout:
+          sql<number>`coalesce(sum(${orders.payoutAmount} - ${orders.paidOutAmount}), 0)`.mapWith(
+            Number,
+          ),
         ordersCount: sql<number>`count(*)`.mapWith(Number),
         openOrdersCount:
           sql<number>`count(*) filter (where ${orders.status} = 'OPEN')`.mapWith(
+            Number,
+          ),
+        awaitingSettlementCount:
+          sql<number>`count(*) filter (where ${orders.status} = 'AWAITING_SETTLEMENT')`.mapWith(
             Number,
           ),
       })
@@ -160,8 +178,10 @@ export const clientsModel = {
       totalPaid,
       totalOpen: totalSold - totalPaid,
       totalPayout: report?.totalPayout ?? 0,
+      totalPendingPayout: report?.totalPendingPayout ?? 0,
       ordersCount: report?.ordersCount ?? 0,
       openOrdersCount: report?.openOrdersCount ?? 0,
+      awaitingSettlementCount: report?.awaitingSettlementCount ?? 0,
     }
   },
   update: async (clientId: string, payload: UpdateClientPayload) => {

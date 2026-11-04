@@ -15,6 +15,20 @@
       "when": 1793136375793,
       "tag": "0001_one_open_order_per_client",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793800256280,
+      "tag": "0002_cash_closing_and_deferred_settlement",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793800266493,
+      "tag": "0003_backfill_cash_movements",
+      "breakpoints": true
     }
   ]
 }

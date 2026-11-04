@@ -37,6 +37,7 @@ export const auditEntityEnum = pgEnum('audit_entity', [
   'ORDER',
   'EXCHANGE',
   'SETTINGS',
+  'CASH_CLOSING',
 ])
 
 export const auditLogs = pgTable(

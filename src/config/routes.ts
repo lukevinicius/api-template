@@ -1,6 +1,7 @@
 import Elysia from 'elysia'
 import { auditsController } from '@/modules/audits/audits.controller'
 import { authController } from '@/modules/auth/auth.controller'
+import { cashClosingsController } from '@/modules/cash-closings/cash-closings.controller'
 import { chipsController } from '@/modules/chips/chips.controller'
 import { clientsController } from '@/modules/clients/clients.controller'
 import { dashboardController } from '@/modules/dashboard/dashboard.controller'
@@ -18,5 +19,6 @@ export const routes = new Elysia()
   .use(chipsController)
   .use(ordersController)
   .use(exchangesController)
+  .use(cashClosingsController)
   .use(dashboardController)
   .use(auditsController)

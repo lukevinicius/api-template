@@ -3,9 +3,11 @@ import { AppError } from '@/shared/utils/errors/AppError'
 import { formatBRL, formatRate } from '@/shared/utils/money'
 import { auditsService } from '../audits/audits.service'
 import type { Actor } from '../audits/audits.types'
+import { cashMovementsModel } from '../cash-closings/cash-closings.model'
 import { chipsModel } from '../chips/chips.model'
 import { assertInCirculation, chipLabel } from '../chips/chips.service'
 import { clientsModel } from '../clients/clients.model'
+import type { Client } from '../clients/clients.types'
 import { settingsModel } from '../settings/settings.model'
 import { ordersModel } from './orders.model'
 import { calculateSettlement } from './orders.settlement'
@@ -18,8 +20,12 @@ import type {
   MoneyMethod,
   OrderDetails,
   OrderFilters,
+  PaymentPart,
   PaymentPayload,
   PaymentResult,
+  PayoutMethod,
+  PayoutPart,
+  SettlePayload,
   UpdateOrderPayload,
 } from './orders.types'
 
@@ -29,6 +35,7 @@ const statusLabel = {
   OPEN: 'aberta',
   CLOSED: 'finalizada',
   CANCELED: 'cancelada',
+  AWAITING_SETTLEMENT: 'aguardando acerto',
 }
 const methodLabel = { PIX: 'PIX', CASH: 'dinheiro', CHIPS: 'fichas' }
 
@@ -144,6 +151,15 @@ async function registerPayment(
   const paidAmount = order.paidAmount + payment.amount
 
   await ordersModel.update(tx, order.id, { paidAmount })
+  await cashMovementsModel.record(tx, [
+    {
+      type: 'PAYMENT',
+      method: payment.method,
+      amount: payment.amount,
+      orderId: order.id,
+      userId: actor.id,
+    },
+  ])
 
   await auditsService.log(
     {
@@ -158,6 +174,157 @@ async function registerPayment(
   )
 
   return paidAmount
+}
+
+/** Pays (part of) the repasse due to the client. */
+async function registerPayout(
+  tx: Transaction,
+  order: LockedOrder,
+  client: Client | null,
+  actor: Actor,
+  method: PayoutMethod,
+  amount: number,
+) {
+  if (method === 'PIX' && !client?.pixKey) {
+    throw new AppError(
+      'O cliente não possui chave PIX cadastrada. Cadastre-a ou faça o repasse em dinheiro',
+      400,
+    )
+  }
+
+  const pixKey = method === 'PIX' ? (client?.pixKey ?? null) : null
+
+  await ordersModel.insertPayout(tx, {
+    orderId: order.id,
+    paidById: actor.id,
+    method,
+    amount,
+    pixKey,
+  })
+
+  const paidOutAmount = order.paidOutAmount + amount
+
+  await ordersModel.update(tx, order.id, {
+    paidOutAmount,
+    payoutMethod: method,
+  })
+  await cashMovementsModel.record(tx, [
+    { type: 'PAYOUT', method, amount, orderId: order.id, userId: actor.id },
+  ])
+
+  await auditsService.log(
+    {
+      actor,
+      action: 'PAYOUT',
+      entity: 'ORDER',
+      entityId: order.id,
+      description: `Repassou ${formatBRL(amount)} em ${method === 'PIX' ? 'PIX' : 'dinheiro'} para ${client?.name ?? 'o cliente'} na comanda #${order.code}`,
+      metadata: {
+        payoutAmount: amount,
+        payoutMethod: method,
+        paidOutAmount,
+        due: order.payoutAmount,
+        pixKey: pixKey ?? undefined,
+      },
+    },
+    tx,
+  )
+
+  return paidOutAmount
+}
+
+/** Checks the sum of the parts of a payment against what can be paid now. */
+function sumParts(parts: { amount: number }[], max: number, message: string) {
+  const total = parts.reduce((sum, part) => sum + part.amount, 0)
+
+  if (total > max) {
+    throw new AppError(
+      `${message} (${formatBRL(total)}) não pode passar de ${formatBRL(max)}`,
+      400,
+    )
+  }
+
+  return total
+}
+
+/**
+ * Registers a payment split in parts (part in PIX, part in cash): one
+ * payment per part. Every part is checked before any of them is saved.
+ */
+async function registerPaymentParts(
+  tx: Transaction,
+  order: LockedOrder,
+  actor: Actor,
+  parts: PaymentPart[],
+  max: number,
+) {
+  sumParts(parts, max, 'O pagamento')
+
+  const payments = parts.map((part) => ({
+    ...buildPayment(part.method, part.amount, part.receivedAmount),
+    method: part.method,
+  }))
+  let paidAmount = order.paidAmount
+
+  for (const payment of payments) {
+    paidAmount = await registerPayment(
+      tx,
+      { ...order, paidAmount },
+      actor,
+      payment,
+    )
+  }
+
+  return {
+    paidAmount,
+    changeAmount: payments.reduce((sum, p) => sum + p.changeAmount, 0),
+  }
+}
+
+/** Pays (part of) the repasse, split in PIX and cash parts. */
+async function registerPayoutParts(
+  tx: Transaction,
+  order: LockedOrder,
+  client: Client | null,
+  actor: Actor,
+  parts: PayoutPart[],
+  max: number,
+) {
+  sumParts(parts, max, 'O repasse')
+
+  if (parts.some((part) => part.method === 'PIX') && !client?.pixKey) {
+    throw new AppError(
+      'O cliente não possui chave PIX cadastrada. Cadastre-a ou faça o repasse em dinheiro',
+      400,
+    )
+  }
+
+  let paidOutAmount = order.paidOutAmount
+
+  for (const part of parts) {
+    paidOutAmount = await registerPayout(
+      tx,
+      { ...order, paidOutAmount },
+      client,
+      actor,
+      part.method,
+      part.amount,
+    )
+  }
+
+  return paidOutAmount
+}
+
+/** Records a change in the value sold on credit (ledger of the cashier). */
+async function recordSale(
+  tx: Executor,
+  orderId: string,
+  amount: number,
+  actor: Actor,
+) {
+  await cashMovementsModel.record(tx, [
+    { type: 'SALE', amount, orderId, userId: actor.id },
+  ])
 }
 
 /** Groups repeated chips and loads their current value. */
@@ -383,6 +550,7 @@ export const ordersService = {
       }
 
       await recalculate(tx, order)
+      await recordSale(tx, orderId, value, actor)
 
       await auditsService.log(
         {
@@ -447,6 +615,7 @@ export const ordersService = {
       })
 
       await recalculate(tx, order)
+      await recordSale(tx, orderId, difference * item.unitPrice, actor)
 
       await auditsService.log(
         {
@@ -480,6 +649,7 @@ export const ordersService = {
       await chipsModel.addToStock(item.chipId, item.quantity, tx)
       await ordersModel.deleteItem(tx, itemId)
       await recalculate(tx, order)
+      await recordSale(tx, orderId, -item.total, actor)
 
       await auditsService.log(
         {
@@ -500,7 +670,7 @@ export const ordersService = {
       return getDetailsOrFail(orderId, tx)
     })
   },
-  /** Advance payment (adiantamento) without closing the order. */
+  /** Advance payment (adiantamento), split in PIX and cash if needed. */
   addPayment: async (
     orderId: string,
     payload: PaymentPayload,
@@ -514,33 +684,22 @@ export const ordersService = {
         throw new AppError('Esta comanda não possui valor em aberto', 400)
       }
 
-      if (payload.amount > openAmount) {
-        throw new AppError(
-          `O pagamento não pode ser maior que o valor em aberto (${formatBRL(openAmount)})`,
-          400,
-        )
-      }
-
-      const payment = buildPayment(
-        payload.method,
-        payload.amount,
-        payload.receivedAmount,
+      const { changeAmount } = await registerPaymentParts(
+        tx,
+        order,
+        actor,
+        payload.payments,
+        openAmount,
       )
 
-      await registerPayment(tx, order, actor, {
-        ...payment,
-        method: payload.method,
-      })
-
-      return {
-        order: await getDetailsOrFail(orderId, tx),
-        changeAmount: payment.changeAmount,
-      }
+      return { order: await getDetailsOrFail(orderId, tx), changeAmount }
     })
   },
   /**
-   * Closes the order: the client returns his chips, the operation fee is
-   * charged on them, the net value pays the debt and the rest is paid back.
+   * Closes the order with the chips the client returned: the operation fee
+   * is charged on them and the net value pays the debt. What is left (the
+   * client still owes, or the house owes the repasse) can be paid now, in
+   * part or in full; otherwise the order waits for the settlement (acerto).
    */
   close: async (
     orderId: string,
@@ -553,6 +712,8 @@ export const ordersService = {
       const { feeRate } = await settingsModel.get(tx)
       const returned = await loadReturnedChips(tx, payload.returnedChips ?? [])
       const returnedAmount = returned.reduce((sum, item) => sum + item.total, 0)
+      const payments = payload.payments ?? []
+      const payouts = payload.payouts ?? []
 
       if (order.total === 0 && returnedAmount === 0) {
         throw new AppError(
@@ -574,29 +735,15 @@ export const ordersService = {
         feeRate,
       })
 
-      if (settlement.remainingDebt > 0 && !payload.payment) {
+      if (payments.length > 0 && settlement.remainingDebt === 0) {
         throw new AppError(
-          `As fichas devolvidas não cobrem a dívida. Informe o pagamento de ${formatBRL(settlement.remainingDebt)}`,
+          'Não há valor a receber: as fichas devolvidas já cobrem a dívida',
           400,
         )
       }
 
-      if (settlement.payoutAmount > 0 && !payload.payoutMethod) {
-        throw new AppError(
-          `Informe como o repasse de ${formatBRL(settlement.payoutAmount)} será feito ao cliente`,
-          400,
-        )
-      }
-
-      if (
-        settlement.payoutAmount > 0 &&
-        payload.payoutMethod === 'PIX' &&
-        !client?.pixKey
-      ) {
-        throw new AppError(
-          'O cliente não possui chave PIX cadastrada. Cadastre-a ou faça o repasse em dinheiro',
-          400,
-        )
+      if (payouts.length > 0 && settlement.payoutAmount === 0) {
+        throw new AppError('Não há repasse a fazer nesta comanda', 400)
       }
 
       // Returned chips go back to the cashier
@@ -615,6 +762,21 @@ export const ordersService = {
           total: item.total,
         })),
       )
+
+      await cashMovementsModel.record(tx, [
+        {
+          type: 'CHIP_RETURN',
+          amount: returnedAmount,
+          orderId,
+          userId: actor.id,
+        },
+        {
+          type: 'FEE',
+          amount: settlement.feeAmount,
+          orderId,
+          userId: actor.id,
+        },
+      ])
 
       if (returnedAmount > 0) {
         await auditsService.log(
@@ -638,7 +800,11 @@ export const ordersService = {
         )
       }
 
-      let current = { ...order }
+      // The payout due is part of the order before anything is paid back
+      const current: LockedOrder = {
+        ...order,
+        payoutAmount: settlement.payoutAmount,
+      }
       let changeAmount = 0
 
       if (settlement.chipsApplied > 0) {
@@ -650,54 +816,51 @@ export const ordersService = {
         })
       }
 
-      if (settlement.remainingDebt > 0 && payload.payment) {
-        const payment = buildPayment(
-          payload.payment.method,
-          settlement.remainingDebt,
-          payload.payment.receivedAmount,
-        )
-
-        current = {
-          ...current,
-          paidAmount: await registerPayment(tx, current, actor, {
-            ...payment,
-            method: payload.payment.method,
-          }),
-        }
-        changeAmount = payment.changeAmount
-      }
-
-      const payoutMethod =
-        settlement.payoutAmount > 0 ? (payload.payoutMethod ?? null) : null
-
-      if (settlement.payoutAmount > 0) {
-        await auditsService.log(
-          {
-            actor,
-            action: 'PAYOUT',
-            entity: 'ORDER',
-            entityId: orderId,
-            description: `Repassou ${formatBRL(settlement.payoutAmount)} em ${payoutMethod === 'PIX' ? 'PIX' : 'dinheiro'} para ${client?.name ?? 'o cliente'} na comanda #${order.code}`,
-            metadata: {
-              payoutAmount: settlement.payoutAmount,
-              payoutMethod,
-              pixKey: payoutMethod === 'PIX' ? client?.pixKey : undefined,
-            },
-          },
+      if (payments.length > 0) {
+        const result = await registerPaymentParts(
           tx,
+          current,
+          actor,
+          payments,
+          settlement.remainingDebt,
+        )
+        current.paidAmount = result.paidAmount
+        changeAmount = result.changeAmount
+      }
+
+      if (payouts.length > 0) {
+        current.paidOutAmount = await registerPayoutParts(
+          tx,
+          current,
+          client,
+          actor,
+          payouts,
+          settlement.payoutAmount,
         )
       }
+
+      const pendingDebt = current.total - current.paidAmount
+      const pendingPayout = current.payoutAmount - current.paidOutAmount
+      const awaiting = pendingDebt > 0 || pendingPayout > 0
+      const now = new Date()
 
       await ordersModel.update(tx, orderId, {
-        status: 'CLOSED',
+        status: awaiting ? 'AWAITING_SETTLEMENT' : 'CLOSED',
         returnedAmount,
         feeRate,
         feeAmount: settlement.feeAmount,
         payoutAmount: settlement.payoutAmount,
-        payoutMethod,
-        closedAt: new Date(),
+        closedAt: now,
         closedById: actor.id,
+        settledAt: awaiting ? null : now,
       })
+
+      const pendingText =
+        pendingDebt > 0
+          ? `. Aguardando acerto: ${client?.name ?? 'o cliente'} deve ${formatBRL(pendingDebt)}`
+          : pendingPayout > 0
+            ? `. Aguardando acerto: repasse de ${formatBRL(pendingPayout)} pendente para ${client?.name ?? 'o cliente'}`
+            : ''
 
       await auditsService.log(
         {
@@ -705,8 +868,14 @@ export const ordersService = {
           action: 'CLOSE',
           entity: 'ORDER',
           entityId: orderId,
-          description: `Finalizou a comanda #${order.code}: ${formatBRL(order.total)} em fichas vendidas, ${formatBRL(returnedAmount)} devolvidas e ${formatBRL(settlement.payoutAmount)} repassados`,
-          metadata: { total: order.total, returnedAmount, ...settlement },
+          description: `Finalizou a comanda #${order.code}: ${formatBRL(order.total)} em fichas vendidas, ${formatBRL(returnedAmount)} devolvidas e ${formatBRL(current.paidOutAmount)} repassados${pendingText}`,
+          metadata: {
+            total: order.total,
+            returnedAmount,
+            pendingDebt,
+            pendingPayout,
+            ...settlement,
+          },
         },
         tx,
       )
@@ -716,6 +885,103 @@ export const ordersService = {
         changeAmount,
         settlement,
       }
+    })
+  },
+  /**
+   * Acerto of an order awaiting settlement, in full or in parts: the client
+   * pays what he still owes, or the house pays the pending repasse (both can
+   * be split in PIX and cash). The order is closed when nothing is left.
+   */
+  settle: async (
+    orderId: string,
+    payload: SettlePayload,
+    actor: Actor,
+  ): Promise<PaymentResult> => {
+    return db.transaction(async (tx) => {
+      const order = await ordersModel.lock(tx, orderId)
+
+      if (!order) {
+        throw new AppError('Comanda não encontrada', 404)
+      }
+
+      if (order.status !== 'AWAITING_SETTLEMENT') {
+        throw new AppError(
+          `Esta comanda está ${statusLabel[order.status]} e não possui acerto pendente`,
+          400,
+        )
+      }
+
+      const debt = order.total - order.paidAmount
+      const pendingPayout = order.payoutAmount - order.paidOutAmount
+      const payments = payload.payments ?? []
+      const payouts = payload.payouts ?? []
+      const current = { ...order }
+      let changeAmount = 0
+
+      if (debt > 0) {
+        if (payouts.length > 0 || payments.length === 0) {
+          throw new AppError(
+            `O cliente deve ${formatBRL(debt)}: informe o pagamento`,
+            400,
+          )
+        }
+
+        const result = await registerPaymentParts(
+          tx,
+          current,
+          actor,
+          payments,
+          debt,
+        )
+        current.paidAmount = result.paidAmount
+        changeAmount = result.changeAmount
+      } else if (pendingPayout > 0) {
+        if (payments.length > 0 || payouts.length === 0) {
+          throw new AppError(
+            `A casa deve ${formatBRL(pendingPayout)} ao cliente: informe o repasse`,
+            400,
+          )
+        }
+
+        const client = await clientsModel.getById(order.clientId, tx)
+
+        current.paidOutAmount = await registerPayoutParts(
+          tx,
+          current,
+          client,
+          actor,
+          payouts,
+          pendingPayout,
+        )
+      }
+
+      const settled =
+        current.total - current.paidAmount <= 0 &&
+        current.payoutAmount - current.paidOutAmount <= 0
+
+      if (settled) {
+        await ordersModel.update(tx, orderId, {
+          status: 'CLOSED',
+          settledAt: new Date(),
+        })
+
+        await auditsService.log(
+          {
+            actor,
+            action: 'CLOSE',
+            entity: 'ORDER',
+            entityId: orderId,
+            description: `Concluiu o acerto da comanda #${order.code}`,
+            metadata: {
+              paidAmount: current.paidAmount,
+              paidOutAmount: current.paidOutAmount,
+            },
+          },
+          tx,
+        )
+      }
+
+      return { order: await getDetailsOrFail(orderId, tx), changeAmount }
     })
   },
   cancel: async (orderId: string, actor: Actor): Promise<OrderDetails> => {
@@ -750,6 +1016,8 @@ export const ordersService = {
         closedAt: new Date(),
         closedById: actor.id,
       })
+      // Nothing was paid: the whole sale is undone
+      await recordSale(tx, orderId, -order.total, actor)
 
       await auditsService.log(
         {

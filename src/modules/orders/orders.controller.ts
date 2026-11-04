@@ -10,6 +10,23 @@ const moneyMethodSchema = t.UnionEnum(['CASH', 'PIX'])
 const notesSchema = t.Optional(t.Nullable(t.String({ maxLength: 500 })))
 const quantitySchema = t.Integer({ minimum: 1, maximum: 100_000 })
 
+// Part in PIX, part in cash...
+const paymentsSchema = t.Array(
+  t.Object({
+    method: moneyMethodSchema,
+    amount: t.Integer({ minimum: 1 }),
+    receivedAmount: t.Optional(t.Integer({ minimum: 1 })),
+  }),
+  { minItems: 1, maxItems: 10 },
+)
+const payoutsSchema = t.Array(
+  t.Object({
+    method: t.UnionEnum(payoutMethodEnum.enumValues),
+    amount: t.Integer({ minimum: 1 }),
+  }),
+  { minItems: 1, maxItems: 10 },
+)
+
 // Orders can be managed by admins and sellers
 export const ordersController = new Elysia({ prefix: '/orders' })
   .use(authPlugin)
@@ -95,11 +112,7 @@ export const ordersController = new Elysia({ prefix: '/orders' })
     async ({ params, body, user, ip }) =>
       ordersService.addPayment(params.orderId, body, { id: user.id, ip }),
     {
-      body: t.Object({
-        method: moneyMethodSchema,
-        amount: t.Integer({ minimum: 1 }),
-        receivedAmount: t.Optional(t.Integer({ minimum: 1 })),
-      }),
+      body: t.Object({ payments: paymentsSchema }),
     },
   )
   .post(
@@ -117,13 +130,20 @@ export const ordersController = new Elysia({ prefix: '/orders' })
             { maxItems: 100 },
           ),
         ),
-        payment: t.Optional(
-          t.Object({
-            method: moneyMethodSchema,
-            receivedAmount: t.Optional(t.Integer({ minimum: 1 })),
-          }),
-        ),
-        payoutMethod: optionalEnum(payoutMethodEnum.enumValues),
+        payments: t.Optional(paymentsSchema),
+        payouts: t.Optional(payoutsSchema),
+      }),
+    },
+  )
+  // Acerto of an order awaiting settlement (in full or in parts)
+  .post(
+    '/:orderId/settle',
+    async ({ params, body, user, ip }) =>
+      ordersService.settle(params.orderId, body, { id: user.id, ip }),
+    {
+      body: t.Object({
+        payments: t.Optional(paymentsSchema),
+        payouts: t.Optional(payoutsSchema),
       }),
     },
   )

@@ -24,6 +24,7 @@ async function reset() {
   await db.execute(sql`
     TRUNCATE TABLE
       audit_logs, refresh_tokens, exchange_items, exchanges,
+      cash_movements, cash_closings, order_payouts,
       order_chip_returns, order_payments, order_items, orders,
       chips, clients, settings, users
     RESTART IDENTITY CASCADE
@@ -121,7 +122,7 @@ async function main() {
   )
   await ordersService.addPayment(
     order.id,
-    { method: 'PIX', amount: 300 * K },
+    { payments: [{ method: 'PIX', amount: 300 * K }] },
     sellerActor,
   )
 
@@ -136,7 +137,7 @@ async function main() {
     order.id,
     {
       returnedChips: [{ chipId: chip100.id, quantity: 1 }],
-      payoutMethod: 'PIX',
+      payouts: [{ method: 'PIX', amount: 65 * K }],
     },
     sellerActor,
   )
@@ -146,8 +147,8 @@ async function main() {
   await ordersService.close(
     order.id,
     {
-      returnedChips: [{ chipId: chip10.id, quantity: 10 }],
-      payoutMethod: 'CASH',
+      returnedChips: [{ chipId: chip100.id, quantity: 1 }],
+      payouts: [{ method: 'CASH', amount: 90 * K }],
     },
     sellerActor,
   )
@@ -161,14 +162,18 @@ async function main() {
   )
   await ordersService.addPayment(
     order.id,
-    { method: 'PIX', amount: 10 * K },
+    { payments: [{ method: 'PIX', amount: 10 * K }] },
     sellerActor,
   )
   await ordersService.close(
     order.id,
     {
       returnedChips: [{ chipId: chip100.id, quantity: 1 }],
-      payoutMethod: 'PIX',
+      // Repasse split: part in PIX, part in cash
+      payouts: [
+        { method: 'PIX', amount: 50 * K },
+        { method: 'CASH', amount: 25 * K },
+      ],
     },
     sellerActor,
   )
@@ -196,9 +201,18 @@ async function main() {
   )
   await ordersService.addPayment(
     order.id,
-    { method: 'CASH', amount: 5 * K, receivedAmount: 6 * K },
+    { payments: [{ method: 'CASH', amount: 5 * K, receivedAmount: 6 * K }] },
     sellerActor,
   )
+
+  // Scenario 4: the event ends with 10K still owed, settled later (fiado)
+  order = await ordersService.create({ clientId: carlos.id }, sellerActor)
+  await ordersService.addItem(
+    order.id,
+    { chipId: chip5.id, quantity: 2 },
+    sellerActor,
+  )
+  await ordersService.close(order.id, {}, sellerActor)
 
   console.log('🔁 Exchanges...')
   await exchangesService.create(
